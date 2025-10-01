@@ -1,10 +1,9 @@
 <!doctype html>
-
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>JPEG Text Editor (Fabric + Tesseract)</title>
+  <title>JPEG Text Editor</title>
   <style>
     body{font-family:system-ui,Arial;margin:12px;color:#111}
     #canvas-container{border:1px solid #ccc;display:inline-block}
@@ -28,22 +27,31 @@
     <button id="deleteSelected">Delete Selected Text</button>
     <button id="clearSelection">Clear Selection</button>
     <button id="download">Download JPG</button>
-  </div>  <div id="tools">
+  </div>
+  <div id="tools">
     <label><input type="radio" name="mode" value="select" checked> Select/Resize</label>
     <label><input type="radio" name="mode" value="erase"> Erase Area</label>
-  </div>  <div id="canvas-container">
+  </div>
+  <div id="canvas-container">
     <canvas id="c" width="900" height="600"></canvas>
-  </div>  <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.0/fabric.min.js"></script>  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.2.1/dist/tesseract.min.js"></script>  <script>
+  </div>
+
+  <!-- Libraries -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.0/fabric.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@2.1.5/dist/tesseract.min.js"></script>
+
+  <script>
     const canvas = new fabric.Canvas('c', { preserveObjectStacking:true });
     let baseImageObj = null;
     let mode = 'select';
+
     const file = document.getElementById('file');
     const runOCR = document.getElementById('runOCR');
     const fontList = document.getElementById('fontList');
     const deleteSelected = document.getElementById('deleteSelected');
     const download = document.getElementById('download');
 
-    // load image
+    // Load image
     file.addEventListener('change', e=>{
       const f = e.target.files[0];
       if(!f) return;
@@ -62,24 +70,18 @@
       }, {crossOrigin: 'anonymous'});
     });
 
-    // OCR
+    // OCR with Tesseract
     runOCR.addEventListener('click', async ()=>{
       if(!baseImageObj) return alert('Load an image first');
       const dataURL = canvas.toDataURL({format:'png'});
       runOCR.disabled = true;
       runOCR.textContent = 'OCR running...';
-      try{
-        const worker = Tesseract.createWorker();
-        await worker.load();
-        await worker.loadLanguage('eng');
-        await worker.initialize('eng');
-        const { data } = await worker.recognize(dataURL);
-        // data.words contains bounding boxes
+      try {
+        const { data } = await Tesseract.recognize(dataURL, 'eng');
         data.words.forEach(w => {
           const { bbox: { x0, y0, x1, y1 }, text } = w;
           const boxW = x1 - x0;
           const boxH = y1 - y0;
-          // scale returned coordinates to canvas size
           const scaleX = canvas.getWidth() / data.width;
           const scaleY = canvas.getHeight() / data.height;
           const left = x0 * scaleX;
@@ -89,41 +91,34 @@
             left, top,
             fontFamily: fontList.value,
             fontSize: fontSize,
-            editable: true,
-            fill: '#000000',
-            backgroundColor: 'rgba(255,255,255,0)',
-            selectable: true,
-            objectCaching: false
+            fill: '#000',
+            selectable: true
           });
-          // center text roughly in bbox by setting width
           txt.set({ width: boxW * scaleX });
           canvas.add(txt);
         });
-        await worker.terminate();
-      }catch(err){
-        console.error(err); alert('OCR failed: ' + err.message);
-      } finally{
+      } catch(err){
+        console.error(err);
+        alert('OCR failed: ' + err.message);
+      } finally {
         runOCR.disabled = false;
         runOCR.textContent = 'Run OCR & Extract Text';
       }
     });
 
-    // mode switching
+    // Mode switching
     document.querySelectorAll('input[name="mode"]').forEach(r=>r.addEventListener('change', e=>{
       mode = e.target.value;
       if(mode === 'select'){
-        canvas.isDrawingMode = false;
         canvas.selection = true;
-        canvas.forEachObject(o=>o.selectable = true && o !== baseImageObj);
+        canvas.forEachObject(o=>o.selectable = o !== baseImageObj);
       } else {
-        // erase mode
-        canvas.isDrawingMode = false;
         canvas.selection = false;
         canvas.forEachObject(o=>{ if(o !== baseImageObj) o.selectable = false; });
       }
     }));
 
-    // delete selected
+    // Delete selected
     deleteSelected.addEventListener('click', ()=>{
       const active = canvas.getActiveObject();
       if(!active) return;
@@ -132,7 +127,7 @@
       } else canvas.remove(active);
     });
 
-    // font change applies to selected object or future objects
+    // Font change
     fontList.addEventListener('change', ()=>{
       const active = canvas.getActiveObject();
       if(active && active.type === 'textbox'){
@@ -141,9 +136,8 @@
       }
     });
 
-    // download
+    // Download JPG
     download.addEventListener('click', ()=>{
-      // make background image not selectable
       canvas.discardActiveObject();
       canvas.renderAll();
       const dataURL = canvas.toDataURL({format:'jpeg', quality:0.92});
@@ -151,7 +145,7 @@
       a.href = dataURL; a.download = 'edited.jpg'; a.click();
     });
 
-    // Erase area implementation: drag to draw rect then fill with average surrounding color
+    // Simple erase mode
     let isDown=false, startX=0, startY=0, rect=null;
     canvas.on('mouse:down', function(opt){
       if(mode !== 'erase') return;
@@ -170,53 +164,20 @@
     canvas.on('mouse:up', function(opt){
       if(!isDown || mode!=='erase') return;
       isDown=false;
-      // get rect area and fill with average color from image around it
       const r = rect.getBoundingRect();
       canvas.remove(rect);
-      performErase(Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height));
-    });
-
-    function performErase(x,y,w,h){
-      if(!baseImageObj) return;
-      // draw base image onto temp canvas and sample
-      const tmp = document.createElement('canvas');
-      tmp.width = canvas.getWidth(); tmp.height = canvas.getHeight();
-      const ctx = tmp.getContext('2d');
-      const imgEl = baseImageObj.getElement();
-      // draw scaled image
-      ctx.drawImage(imgEl, 0, 0, tmp.width, tmp.height);
-      // sample border pixels around selection to estimate background color
-      const samples = [];
-      const sampleStep = 3;
-      // top border
-      for(let i=x;i<x+w;i+=sampleStep){ pushIfValid(i,y-1); }
-      // bottom
-      for(let i=x;i<x+w;i+=sampleStep){ pushIfValid(i,y+h+1); }
-      // left
-      for(let j=y;j<y+h;j+=sampleStep){ pushIfValid(x-1,j); }
-      // right
-      for(let j=y;j<y+h;j+=sampleStep){ pushIfValid(x+w+1,j); }
-      function pushIfValid(px,py){ if(px<0||py<0||px>=tmp.width||py>=tmp.height) return; const d = ctx.getImageData(px,py,1,1).data; samples.push([d[0],d[1],d[2]]); }
-      if(samples.length===0){ alert('Cannot sample area to erase. Try a different region.'); return; }
-      // average
-      const avg = samples.reduce((acc,p)=>{ acc[0]+=p[0]; acc[1]+=p[1]; acc[2]+=p[2]; return acc; }, [0,0,0]).map(v=>Math.round(v/samples.length));
-      // create fabric rect filled with average color at given area and put on top of image
-      const fillHex = 'rgb('+avg.join(',')+')';
-      const patch = new fabric.Rect({ left:x, top:y, width:w, height:h, fill:fillHex, selectable:false, evented:false });
+      const patch = new fabric.Rect({ left:r.left, top:r.top, width:r.width, height:r.height, fill:'#fff', selectable:false, evented:false });
       canvas.add(patch);
       canvas.renderAll();
-    }
+    });
 
-    // keyboard delete
-    document.addEventListener('keydown', (e)=>{ if(e.key==='Delete' || e.key==='Backspace'){ const a = canvas.getActiveObject(); if(a) canvas.remove(a); } });
-
-    // keep controls working after object transforms
-    canvas.on('object:modified', ()=>canvas.renderAll());
-
-    // basic instructions overlay
-    const instr = new fabric.Text('Load JPG -> Run OCR -> Edit text or switch to Erase to remove areas -> Resize text with handles -> Download', { left:10, top:10, fontSize:12, fill:'#444', selectable:false });
-    instr.set({ backgroundColor:'rgba(255,255,255,0.6)' });
-    // do not add instruction until canvas has image
-    canvas.on('after:render', ()=>{});
-  </script></body>
+    // Keyboard delete
+    document.addEventListener('keydown', (e)=>{ 
+      if(e.key==='Delete' || e.key==='Backspace'){ 
+        const a = canvas.getActiveObject(); 
+        if(a) canvas.remove(a); 
+      } 
+    });
+  </script>
+</body>
 </html>
