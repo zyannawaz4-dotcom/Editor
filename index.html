@@ -36,9 +36,8 @@
     <canvas id="c" width="900" height="600"></canvas>
   </div>
 
-  <!-- Libraries -->
+  <!-- Fabric.js only (no tesseract needed now) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.0/fabric.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@2.1.5/dist/tesseract.min.js"></script>
 
   <script>
     const canvas = new fabric.Canvas('c', { preserveObjectStacking:true });
@@ -70,32 +69,44 @@
       }, {crossOrigin: 'anonymous'});
     });
 
-    // OCR with Tesseract
+    // OCR using OCR.space API
     runOCR.addEventListener('click', async ()=>{
       if(!baseImageObj) return alert('Load an image first');
       const dataURL = canvas.toDataURL({format:'png'});
       runOCR.disabled = true;
       runOCR.textContent = 'OCR running...';
       try {
-        const { data } = await Tesseract.recognize(dataURL, 'eng');
-        data.words.forEach(w => {
-          const { bbox: { x0, y0, x1, y1 }, text } = w;
-          const boxW = x1 - x0;
-          const boxH = y1 - y0;
-          const scaleX = canvas.getWidth() / data.width;
-          const scaleY = canvas.getHeight() / data.height;
-          const left = x0 * scaleX;
-          const top = y0 * scaleY;
-          const fontSize = Math.max(10, boxH * Math.max(scaleX, scaleY));
-          const txt = new fabric.Textbox(text.trim() || '.', {
-            left, top,
-            fontFamily: fontList.value,
-            fontSize: fontSize,
-            fill: '#000',
-            selectable: true
+        const blob = await (await fetch(dataURL)).blob();
+        const formData = new FormData();
+        formData.append("apikey", "K84132464388957"); // your key
+        formData.append("language", "eng");
+        formData.append("isOverlayRequired", "true");
+        formData.append("file", blob, "image.png");
+
+        const res = await fetch("https://api.ocr.space/parse/image", {
+          method: "POST",
+          body: formData
+        });
+        const result = await res.json();
+        const parsed = result.ParsedResults?.[0];
+        if(!parsed || !parsed.TextOverlay) throw new Error("No text found");
+
+        parsed.TextOverlay.Lines.forEach(line=>{
+          line.Words.forEach(w=>{
+            const left = parseFloat(w.Left);
+            const top = parseFloat(w.Top);
+            const width = parseFloat(w.Width);
+            const height = parseFloat(w.Height);
+            const txt = new fabric.Textbox(w.WordText || '.', {
+              left, top,
+              fontFamily: fontList.value,
+              fontSize: Math.max(12, height),
+              fill: '#000',
+              selectable: true
+            });
+            txt.set({ width: width });
+            canvas.add(txt);
           });
-          txt.set({ width: boxW * scaleX });
-          canvas.add(txt);
         });
       } catch(err){
         console.error(err);
